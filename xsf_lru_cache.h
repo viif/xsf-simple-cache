@@ -45,8 +45,8 @@ class XSFLruCache : public XSFCache<K, V> {
    private:
     void makeRecently(const K& key) {
         // 移至链表后端
-        auto& nodeIt = key2node_[key];
-        nodes_.splice(nodes_.end(), nodes_, nodeIt);
+        auto& node_iter = key2node_[key];
+        nodes_.splice(nodes_.end(), nodes_, node_iter);
     }
 
     void popLeastRecently() {
@@ -65,7 +65,8 @@ class XSFLruCache : public XSFCache<K, V> {
         Node() = default;
         Node(const K& k, const V& v) : key(k), value(v) {}
     };
-    size_t capacity_;
+    const size_t capacity_;
+
     std::list<Node> nodes_;
     std::unordered_map<K, typename std::list<Node>::iterator> key2node_;
     std::mutex mutex_;
