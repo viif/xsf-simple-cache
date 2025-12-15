@@ -15,10 +15,10 @@ class XSFLfuCache {
     explicit XSFLfuCache(size_t capacity) : capacity_(capacity) {}
 
     void put(const K& key, const V& value) override {
-        std::lock_guard<std::mutex> lock(mutex_);
         if (capacity_ == 0) {
             return;
         }
+        std::lock_guard<std::mutex> lock(mutex_);
         if (key2node_.count(key) != 0) {
             // key 已存在，更新
             key2node_[key]->value = value;
