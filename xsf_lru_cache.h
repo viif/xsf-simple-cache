@@ -56,10 +56,10 @@ class XSFLruCache : public XSFCache<K, V> {
     void popLeastRecently() {
         // 记录将逐出的 key
         const K& key = nodes_.front().key;
-        // 移除链表头部节点
-        nodes_.pop_front();
         // 移除映射
         key2node_.erase(key);
+        // 移除链表头部节点
+        nodes_.pop_front();
     }
 
     struct Node {

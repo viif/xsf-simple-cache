@@ -4,6 +4,7 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "xsf_cache.h"
 
@@ -17,9 +18,7 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
                               Hash hash = Hash{},
                               KeyEqual key_equal = KeyEqual{})
         : capacity_(capacity),
-          aging_threshold_(10),
-          hash_(std::move(hash)),
-          key_equal_(std::move(key_equal)),
+          aging_threshold_(aging_threshold),
           key2freq_(0, hash, key_equal),
           key2node_(0, hash, key_equal) {}
 
@@ -60,6 +59,10 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
 
    private:
     void updateAvgFreq(uint32_t freq) {
+        if (key2freq_.size() == 0) {
+            avg_freq_ = 0;
+            return;
+        }
         avg_freq_ =
             (avg_freq_ * (key2freq_.size() - 1) + freq) / key2freq_.size();
         if (avg_freq_ < aging_threshold_) {
@@ -68,6 +71,7 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
         // 平均频率超过阈值，进行衰减
         uint32_t decay = aging_threshold_ / 2;
         // 衰减所有 key 的频率，更新最小频率，计算新的平均频率
+        uint32_t new_avg_freq = 0;
         for (auto& [k, f] : key2freq_) {
             if (f > decay) {
                 f -= decay;
@@ -76,20 +80,20 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
                 f = 1;
                 min_freq_ = 1;
             }
-            avg_freq_ += f;
+            new_avg_freq += f;
         }
-        avg_freq_ /= key2freq_.size();
+        avg_freq_ = new_avg_freq / key2freq_.size();
         // 重新构建频率到节点、key到节点的映射
+        std::vector<std::pair<K, V>> items;
+        for (auto& [k, it] : key2node_) {
+            items.emplace_back(k, it->value);
+        }
         freq2nodes_.clear();
         key2node_.clear();
-        for (auto& [k, it] : key2node_) {
+        for (const auto& [k, v] : items) {
             uint32_t f = key2freq_[k];
-            freq2nodes_[f].emplace_back(k, it->value);
+            freq2nodes_[f].emplace_back(k, v);
             key2node_[k] = std::prev(freq2nodes_[f].end());
-        }
-        // 重置平均频率
-        for (const auto& [k, f] : key2freq_) {
-            avg_freq_ += f;
         }
     }
 
@@ -101,7 +105,8 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
 
         // 在新频率对应的节点链表中插入新节点
         auto& new_nodes = freq2nodes_[freq + 1];
-        new_nodes.emplace_back(key, key2node_[key]->value);
+        V value = key2node_[key]->value;
+        new_nodes.emplace_back(key, value);
         // 删除原频率对应的节点链表中的节点
         auto& old_nodes = freq2nodes_[freq];
         old_nodes.erase(key2node_[key]);
@@ -125,16 +130,16 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
         auto& nodes = freq2nodes_[min_freq_];
         // 找到要逐出的（访问频率最少且最旧）的节点对应的 key
         const K& key = nodes.front().key;
+        // 移除对应 key 到节点的映射
+        key2node_.erase(key);
+        // 移除对应 key 到频率的映射
+        key2freq_.erase(key);
         // 从链表中逐出节点
         nodes.pop_front();
         if (nodes.empty()) {
             // 若链表为空，删除对应频率到链表的映射
             freq2nodes_.erase(min_freq_);
         }
-        // 移除对应 key 到节点的映射
-        key2node_.erase(key);
-        // 移除对应 key 到频率的映射
-        key2freq_.erase(key);
     }
 
     struct Node {
@@ -149,9 +154,6 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
     uint32_t min_freq_{0};
     uint32_t avg_freq_{0};
     std::mutex mutex_;
-
-    Hash hash_;
-    KeyEqual key_equal_;
 
     std::unordered_map<K, uint32_t, Hash, KeyEqual> key2freq_;
     std::unordered_map<uint32_t, std::list<Node>> freq2nodes_;

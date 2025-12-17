@@ -83,16 +83,16 @@ class XSFLfuCache : public XSFCache<K, V> {
         auto& nodes = freq2nodes_[min_freq_];
         // 找到要逐出的（访问频率最少且最旧）的节点对应的 key
         const K& key = nodes.front().key;
+        // 移除对应 key 到节点的映射
+        key2node_.erase(key);
+        // 移除对应 key 到频率的映射
+        key2freq_.erase(key);
         // 从链表中逐出节点
         nodes.pop_front();
         if (nodes.empty()) {
             // 若链表为空，删除对应频率到链表的映射
             freq2nodes_.erase(min_freq_);
         }
-        // 移除对应 key 到节点的映射
-        key2node_.erase(key);
-        // 移除对应 key 到频率的映射
-        key2freq_.erase(key);
     }
 
     struct Node {
