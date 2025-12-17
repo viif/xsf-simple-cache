@@ -9,10 +9,15 @@
 
 namespace xsf_simple_cache {
 
-template <typename K, typename V>
-class XSFLfuCache {
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFLfuCache : public XSFCache<K, V> {
    public:
-    explicit XSFLfuCache(size_t capacity) : capacity_(capacity) {}
+    explicit XSFLfuCache(size_t capacity, Hash hash = Hash{},
+                         KeyEqual key_equal = KeyEqual{})
+        : capacity_(capacity),
+          key2freq_(0, hash, key_equal),
+          key2node_(0, hash, key_equal) {}
 
     void put(const K& key, const V& value) override {
         if (capacity_ == 0) {
@@ -101,9 +106,10 @@ class XSFLfuCache {
     uint32_t min_freq_{0};
     std::mutex mutex_;
 
-    std::unordered_map<K, uint32_t> key2freq_;
+    std::unordered_map<K, uint32_t, Hash, KeyEqual> key2freq_;
     std::unordered_map<uint32_t, std::list<Node>> freq2nodes_;
-    std::unordered_map<K, typename std::list<Node>::iterator> key2node_;
+    std::unordered_map<K, typename std::list<Node>::iterator, Hash, KeyEqual>
+        key2node_;
 };
 
 }  // namespace xsf_simple_cache
