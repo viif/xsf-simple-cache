@@ -55,7 +55,7 @@ class XSFLfuCache : public XSFCache<K, V> {
    private:
     void increaseFreq(const K& key) {
         // 找到 key 对应的频率
-        uint32_t freq = key2freq_[key];
+        uint8_t freq = key2freq_[key];
         // 更新 key 到频率的映射
         key2freq_[key]++;
 
@@ -103,13 +103,30 @@ class XSFLfuCache : public XSFCache<K, V> {
         Node(const K& k, const V& v) : key(k), value(v) {}
     };
     const size_t capacity_;
-    uint32_t min_freq_{0};
+    uint8_t min_freq_{0};
     std::mutex mutex_;
 
-    std::unordered_map<K, uint32_t, Hash, KeyEqual> key2freq_;
-    std::unordered_map<uint32_t, std::list<Node>> freq2nodes_;
+    std::unordered_map<K, uint8_t, Hash, KeyEqual> key2freq_;
+    std::unordered_map<uint8_t, std::list<Node>> freq2nodes_;
     std::unordered_map<K, typename std::list<Node>::iterator, Hash, KeyEqual>
         key2node_;
+};
+
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFLfuCacheCreator : public XSFCacheCreator<K, V> {
+   public:
+    explicit XSFLfuCacheCreator(Hash hash = Hash{}, KeyEqual eq = KeyEqual())
+        : hash_(std::move(hash)), key_equal_(std::move(eq)) {}
+
+    std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
+        return std::make_unique<XSFLfuCache<K, V, Hash, KeyEqual>>(
+            capacity, hash_, key_equal_);
+    }
+
+   private:
+    Hash hash_;
+    KeyEqual key_equal_;
 };
 
 }  // namespace xsf_simple_cache

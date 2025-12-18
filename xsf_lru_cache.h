@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -75,6 +76,23 @@ class XSFLruCache : public XSFCache<K, V> {
     std::unordered_map<K, typename std::list<Node>::iterator, Hash, KeyEqual>
         key2node_;
     std::mutex mutex_;
+};
+
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFLruCacheCreator : public XSFCacheCreator<K, V> {
+   public:
+    explicit XSFLruCacheCreator(Hash hash = Hash{}, KeyEqual eq = KeyEqual{})
+        : hash_(std::move(hash)), key_equal_(std::move(eq)) {}
+
+    std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
+        return std::make_unique<XSFLruCache<K, V, Hash, KeyEqual>>(
+            capacity, hash_, key_equal_);
+    }
+
+   private:
+    Hash hash_;
+    KeyEqual key_equal_;
 };
 
 }  // namespace xsf_simple_cache

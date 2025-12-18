@@ -14,7 +14,10 @@ template <typename K, typename V, typename Hash = std::hash<K>,
           typename KeyEqual = std::equal_to<K>>
 class XSFLfuAgingCache : public XSFCache<K, V> {
    public:
-    explicit XSFLfuAgingCache(size_t capacity, uint32_t aging_threshold = 10,
+    static constexpr uint8_t DEFAULT_AGING_THRESHOLD = 10;
+
+    explicit XSFLfuAgingCache(size_t capacity,
+                              uint8_t aging_threshold = DEFAULT_AGING_THRESHOLD,
                               Hash hash = Hash{},
                               KeyEqual key_equal = KeyEqual{})
         : capacity_(capacity),
@@ -58,7 +61,7 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
     }
 
    private:
-    void updateAvgFreq(uint32_t freq) {
+    void updateAvgFreq(uint8_t freq) {
         if (key2freq_.size() == 0) {
             avg_freq_ = 0;
             return;
@@ -69,9 +72,9 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
             return;
         }
         // 平均频率超过阈值，进行衰减
-        uint32_t decay = aging_threshold_ / 2;
+        uint8_t decay = aging_threshold_ / 2;
         // 衰减所有 key 的频率，更新最小频率，计算新的平均频率
-        uint32_t new_avg_freq = 0;
+        uint8_t new_avg_freq = 0;
         for (auto& [k, f] : key2freq_) {
             if (f > decay) {
                 f -= decay;
@@ -91,7 +94,7 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
         freq2nodes_.clear();
         key2node_.clear();
         for (const auto& [k, v] : items) {
-            uint32_t f = key2freq_[k];
+            uint8_t f = key2freq_[k];
             freq2nodes_[f].emplace_back(k, v);
             key2node_[k] = std::prev(freq2nodes_[f].end());
         }
@@ -99,7 +102,7 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
 
     void increaseFreq(const K& key) {
         // 找到 key 对应的频率
-        uint32_t freq = key2freq_[key];
+        uint8_t freq = key2freq_[key];
         // 更新 key 到频率的映射
         key2freq_[key]++;
 
@@ -150,15 +153,35 @@ class XSFLfuAgingCache : public XSFCache<K, V> {
         Node(const K& k, const V& v) : key(k), value(v) {}
     };
     const size_t capacity_;
-    const uint32_t aging_threshold_{10};
-    uint32_t min_freq_{0};
-    uint32_t avg_freq_{0};
+    const uint8_t aging_threshold_{10};
+    uint8_t min_freq_{0};
+    uint8_t avg_freq_{0};
     std::mutex mutex_;
 
-    std::unordered_map<K, uint32_t, Hash, KeyEqual> key2freq_;
-    std::unordered_map<uint32_t, std::list<Node>> freq2nodes_;
+    std::unordered_map<K, uint8_t, Hash, KeyEqual> key2freq_;
+    std::unordered_map<uint8_t, std::list<Node>> freq2nodes_;
     std::unordered_map<K, typename std::list<Node>::iterator, Hash, KeyEqual>
         key2node_;
+};
+
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFLfuAgingCacheCreator : public XSFCacheCreator<K, V> {
+   public:
+    using cache_type = XSFLfuAgingCache<K, V, Hash, KeyEqual>;
+
+    explicit XSFLfuAgingCacheCreator(Hash hash = Hash{},
+                                     KeyEqual eq = KeyEqual())
+        : hash_(std::move(hash)), key_equal_(std::move(eq)) {}
+
+    std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
+        return std::make_unique<cache_type>(
+            capacity, cache_type::DEFAULT_AGING_THRESHOLD, hash_, key_equal_);
+    }
+
+   private:
+    Hash hash_;
+    KeyEqual key_equal_;
 };
 
 }  // namespace xsf_simple_cache

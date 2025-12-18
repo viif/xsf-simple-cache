@@ -100,8 +100,10 @@ template <typename K, typename V, typename Hash = std::hash<K>,
           typename KeyEqual = std::equal_to<K>>
 class XSFLruKCache : public XSFCache<K, V> {
    public:
-    explicit XSFLruKCache(size_t capacity, size_t k = 2, Hash hash = Hash{},
-                          KeyEqual key_equal = KeyEqual{})
+    static constexpr uint8_t DEFAULT_K = 2;
+
+    explicit XSFLruKCache(size_t capacity, size_t k = DEFAULT_K,
+                          Hash hash = Hash{}, KeyEqual key_equal = KeyEqual{})
         : k_(k),
           capacity_(capacity),
           history_lru_(capacity, hash, key_equal),
@@ -194,6 +196,25 @@ class XSFLruKCache : public XSFCache<K, V> {
         history_lru_;  // 访问次数小于 k 的记录
     XSFLruCacheUnsafe<K, V, Hash, KeyEqual>
         cache_lru_;  // 访问次数达到 k 的记录
+};
+
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFLruKCacheCreator : public XSFCacheCreator<K, V> {
+   public:
+    using cache_type = XSFLruKCache<K, V, Hash, KeyEqual>;
+
+    explicit XSFLruKCacheCreator(Hash hash = Hash{}, KeyEqual eq = KeyEqual())
+        : hash_(std::move(hash)), key_equal_(std::move(eq)) {}
+
+    std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
+        return std::make_unique<cache_type>(capacity, cache_type::DEFAULT_K,
+                                            hash_, key_equal_);
+    }
+
+   private:
+    Hash hash_;
+    KeyEqual key_equal_;
 };
 
 }  // namespace xsf_simple_cache
