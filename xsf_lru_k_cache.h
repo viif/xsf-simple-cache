@@ -102,7 +102,7 @@ class XSFLruKCache : public XSFCache<K, V> {
    public:
     static constexpr uint8_t DEFAULT_K = 2;
 
-    explicit XSFLruKCache(size_t capacity, size_t k = DEFAULT_K,
+    explicit XSFLruKCache(size_t capacity, uint8_t k = DEFAULT_K,
                           Hash hash = Hash{}, KeyEqual key_equal = KeyEqual{})
         : k_(k),
           capacity_(capacity),
@@ -183,12 +183,12 @@ class XSFLruKCache : public XSFCache<K, V> {
 
     size_t size() const { return history_lru_.size() + cache_lru_.size(); }
 
-    const size_t k_;  // 访问次数阈值
+    const uint8_t k_;  // 访问次数阈值
     const size_t capacity_;
     std::mutex mutex_;
 
     struct AccessRecord {
-        size_t count;
+        uint8_t count;
         V value;
     };
 
@@ -205,14 +205,14 @@ class XSFLruKCacheCreator : public XSFCacheCreator<K, V> {
     using cache_type = XSFLruKCache<K, V, Hash, KeyEqual>;
 
     explicit XSFLruKCacheCreator(Hash hash = Hash{}, KeyEqual eq = KeyEqual(),
-                                 size_t k = cache_type::DEFAULT_K)
+                                 uint8_t k = cache_type::DEFAULT_K)
         : hash_(std::move(hash)), key_equal_(std::move(eq)), k_(k) {}
 
     std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
         return std::make_unique<cache_type>(capacity, k_, hash_, key_equal_);
     }
 
-    size_t k_{cache_type::DEFAULT_K};
+    uint8_t k_{cache_type::DEFAULT_K};
 
    private:
     Hash hash_;
