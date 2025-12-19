@@ -388,6 +388,28 @@ class XSFArcCache : public XSFCache<K, V> {
     XSFArcLfuList<K, V, Hash, KeyEqual> lfu_list_;
 };
 
+template <typename K, typename V, typename Hash = std::hash<K>,
+          typename KeyEqual = std::equal_to<K>>
+class XSFArcCacheCreator : public XSFCacheCreator<K, V> {
+   public:
+    static constexpr uint8_t DEFAULT_K = 3;
+
+    explicit XSFArcCacheCreator(uint8_t k = DEFAULT_K, Hash hash = Hash{},
+                                KeyEqual key_equal = KeyEqual{})
+        : k_(k), hash_(hash), key_equal_(key_equal) {}
+
+    std::unique_ptr<XSFCache<K, V>> create(size_t capacity) const override {
+        return std::make_unique<XSFArcCache<K, V, Hash, KeyEqual>>(
+            capacity, k_, hash_, key_equal_);
+    }
+
+    uint8_t k_{DEFAULT_K};
+
+   private:
+    const Hash hash_;
+    const KeyEqual key_equal_;
+};
+
 }  // namespace xsf_simple_cache
 
 #endif  // XSF_ARC_CACHE_H
