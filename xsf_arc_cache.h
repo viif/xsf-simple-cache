@@ -338,8 +338,6 @@ class XSFArcCache : public XSFCache<K, V> {
         } else if (in_lfu) {
             // 从 lfu_list 中获取 value
             auto value = lfu_list_.get(key).value();
-            // 加入 lru_list
-            lru_list_.put(key, value);
             return value;
         }
         return std::nullopt;
