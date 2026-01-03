@@ -113,11 +113,11 @@ class XSFLfuCache : public XSFCache<K, V> {
     bool isAtFullCapacity() const { return key2node_.size() >= capacity_; }
 
     void removeLeastFrequentlyUsed() {
-        removeLruNode();
+        removeLfuNode();
         auditEmptyFrequencyList(min_freq_);
     }
 
-    void removeLruNode() {
+    void removeLfuNode() {
         auto& nodes = freq2nodes_[min_freq_];
         const K& key_to_remove = nodes.front().key;
         key2node_.erase(key_to_remove);

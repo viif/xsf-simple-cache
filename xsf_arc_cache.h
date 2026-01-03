@@ -21,17 +21,11 @@ class XSFArcGhostList {
         : capacity_(capacity), key2key_(0, hash, key_equal) {}
 
     void put(const K& key) {
-        if (capacity_ == 0) {
+        if (isZeroCapacity()) {
             return;
         }
-        if (keys_.size() >= capacity_) {
-            pop();
-        }
-        if (contains(key)) {
-            remove(key);
-        }
-        keys_.push_back(key);
-        key2key_[key] = std::prev(keys_.end());
+        ensureCapacity();
+        updateKeyPosition(key);
     }
 
     bool contains(const K& key) const { return key2key_.count(key) != 0; }
@@ -40,16 +34,54 @@ class XSFArcGhostList {
         if (!contains(key)) {
             return;
         }
-        auto it = key2key_[key];
-        keys_.erase(it);
-        key2key_.erase(key);
+        eraseKey(key);
     }
 
    private:
-    void pop() {
+    bool isZeroCapacity() const { return capacity_ == 0; }
+
+    void ensureCapacity() {
+        if (keys_.size() >= capacity_) {
+            evictOldest();
+        }
+    }
+
+    void updateKeyPosition(const K& key) {
+        if (contains(key)) {
+            moveKeyToBack(key);
+        } else {
+            insertNewKey(key);
+        }
+    }
+
+    void evictOldest() {
         const K& old_key = keys_.front();
-        key2key_.erase(old_key);
+        eraseFromMap(old_key);
         keys_.pop_front();
+    }
+
+    void moveKeyToBack(const K& key) {
+        auto it = key2key_[key];
+        keys_.erase(it);
+        insertKeyToList(key);
+    }
+
+    void insertNewKey(const K& key) {
+        insertKeyToList(key);
+        key2key_[key] = std::prev(keys_.end());
+    }
+
+    void insertKeyToList(const K& key) {
+        keys_.push_back(key);
+        key2key_[key] = std::prev(keys_.end());
+    }
+
+    void eraseFromMap(const K& key) { key2key_.erase(key); }
+
+    void eraseKey(const K& key) {
+        auto it = key2key_[key];
+        keys_.erase(it);
+        eraseFromMap(key);
     }
 
     const size_t capacity_;
@@ -69,47 +101,36 @@ class XSFArcLruList {
           ghost_list_(capacity, hash, key_equal) {}
 
     void put(const K& key, const V& value) {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
-        if (contains(key)) {
-            // key 已存在，更新
-            key2node_[key]->value = value;
-            makeRecently(key);
-        } else {
-            // key 不存在，插入
-            if (nodes_.size() >= capacity_) {
-                popLeastRecently();
-            }
-            nodes_.emplace_back(key, value);
-            key2node_[key] = std::prev(nodes_.end());
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) {
-        if (!contains(key)) {
+        if (IsZeroCapacity()) {
             return std::nullopt;
         }
-        makeRecently(key);
-        return key2node_[key]->value;
+        return handleGetOperation(key);
     }
 
     bool contains(const K& key) const { return key2node_.count(key) != 0; }
 
     uint8_t getCountByKey(const K& key) const {
+        if (!contains(key)) {
+            return 0;
+        }
         return key2node_.at(key)->count;
     }
 
     void increaseCapacity() { capacity_++; }
 
     void decreaseCapacity() {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
         capacity_--;
-        if (nodes_.size() > capacity_) {
-            popLeastRecently();
-        }
+        ensureCapacityForInsertion();
     }
 
     bool containsInGhostList(const K& key) const {
@@ -119,23 +140,70 @@ class XSFArcLruList {
     void removeInGhostList(const K& key) { ghost_list_.remove(key); }
 
    private:
-    void makeRecently(const K& key) {
-        // 增加 count
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        if (isKeyPresent(key)) {
+            updateExistingKey(key, value);
+        } else {
+            insertNewKey(key, value);
+        }
+    }
+
+    std::optional<V> handleGetOperation(const K& key) {
+        if (!isKeyPresent(key)) {
+            return std::nullopt;
+        }
+        return retrieveAndPromoteValue(key);
+    }
+
+    bool isKeyPresent(const K& key) const { return key2node_.count(key) != 0; }
+
+    void updateExistingKey(const K& key, const V& value) {
+        updateNodeValue(key, value);
+        promoteNodeToRecent(key);
+    }
+
+    void insertNewKey(const K& key, const V& value) {
+        ensureCapacityForInsertion();
+        addNewNode(key, value);
+    }
+
+    std::optional<V> retrieveAndPromoteValue(const K& key) {
+        promoteNodeToRecent(key);
+        return getValueByKey(key);
+    }
+
+    void ensureCapacityForInsertion() {
+        if (isAtFullCapacity()) {
+            evictLeastRecentlyUsed();
+        }
+    }
+
+    bool isAtFullCapacity() const { return key2node_.size() >= capacity_; }
+
+    V getValueByKey(const K& key) { return key2node_[key]->value; }
+
+    void promoteNodeToRecent(const K& key) {
         key2node_[key]->count++;
-        // 移至链表后端
         auto& node_iter = key2node_[key];
         nodes_.splice(nodes_.end(), nodes_, node_iter);
     }
 
-    void popLeastRecently() {
-        // 记录将逐出的 key
-        const K& old_key = nodes_.front().key;
-        // 将 key 移至 ghost_list
-        ghost_list_.put(old_key);
-        // 移除映射
-        key2node_.erase(old_key);
-        // 移除链表头部节点
+    void evictLeastRecentlyUsed() {
+        const K& lru_key = nodes_.front().key;
+        ghost_list_.put(lru_key);
+        key2node_.erase(lru_key);
         nodes_.pop_front();
+    }
+
+    void addNewNode(const K& key, const V& value) {
+        nodes_.emplace_back(key, value);
+        key2node_[key] = std::prev(nodes_.end());
+    }
+
+    void updateNodeValue(const K& key, const V& value) {
+        key2node_[key]->value = value;
     }
 
     struct Node {
@@ -166,34 +234,17 @@ class XSFArcLfuList {
           ghost_list_(capacity, hash, key_equal) {}
 
     void put(const K& key, const V& value) {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
-        if (contains(key)) {
-            // key 已存在，更新
-            key2node_[key]->value = value;
-            increaseFreq(key);
-        } else {
-            // key 不存在，加入
-            if (key2node_.size() >= capacity_) {
-                removeMinFreqKey();
-            }
-            // 新加入，即对应频率、最小频率为 1
-            key2freq_[key] = 1;
-            min_freq_ = 1;
-            // 加入到对应频率的节点链表中
-            freq2nodes_[1].emplace_back(key, value);
-            // 记录 key 到节点的映射
-            key2node_[key] = std::prev(freq2nodes_[1].end());
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) {
-        if (!contains(key)) {
+        if (IsZeroCapacity()) {
             return std::nullopt;
         }
-        increaseFreq(key);
-        return key2node_[key]->value;
+        return handleGetOperation(key);
     }
 
     bool contains(const K& key) const { return key2node_.count(key) != 0; }
@@ -201,13 +252,11 @@ class XSFArcLfuList {
     void increaseCapacity() { capacity_++; }
 
     void decreaseCapacity() {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
         capacity_--;
-        if (key2node_.size() > capacity_) {
-            removeMinFreqKey();
-        }
+        ensureCapacityAfterDecrease();
     }
 
     bool containsInGhostList(const K& key) const {
@@ -217,52 +266,6 @@ class XSFArcLfuList {
     void removeInGhostList(const K& key) { ghost_list_.remove(key); }
 
    private:
-    void increaseFreq(const K& key) {
-        // 找到 key 对应的频率
-        uint8_t freq = key2freq_[key];
-        // 更新 key 到频率的映射
-        key2freq_[key]++;
-
-        // 在新频率对应的节点链表中插入新节点
-        auto& new_nodes = freq2nodes_[freq + 1];
-        new_nodes.emplace_back(key, key2node_[key]->value);
-        // 删除原频率对应的节点链表中的节点
-        auto& old_nodes = freq2nodes_[freq];
-        old_nodes.erase(key2node_[key]);
-        if (old_nodes.empty()) {
-            // 若原节点链表为空
-            // 删除对应频率到链表的映射
-            freq2nodes_.erase(freq);
-            if (freq == min_freq_) {
-                // 更新最小频率
-                min_freq_ = freq2nodes_.begin()->first;
-            }
-        }
-        // 更新 key 到节点的映射
-        key2node_[key] = std::prev(new_nodes.end());
-    }
-
-    void removeMinFreqKey() {
-        // 找到最小频率对应的节点链表
-        auto& nodes = freq2nodes_[min_freq_];
-        // 找到要逐出的（访问频率最少且最旧）的节点对应的 key
-        const K& key = nodes.front().key;
-        // 将 key 移至 ghost_list
-        ghost_list_.put(key);
-        // 移除对应 key 到节点的映射
-        key2node_.erase(key);
-        // 移除对应 key 到频率的映射
-        key2freq_.erase(key);
-        // 从链表中逐出节点
-        nodes.pop_front();
-        if (nodes.empty()) {
-            // 若链表为空，删除对应频率到链表的映射
-            freq2nodes_.erase(min_freq_);
-        }
-        // 更新最小频率
-        min_freq_ = freq2nodes_.begin()->first;
-    }
-
     struct Node {
         K key;
         V value;
@@ -270,6 +273,117 @@ class XSFArcLfuList {
         Node() = default;
         Node(const K& k, const V& v) : key(k), value(v) {}
     };
+
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        if (isKeyPresent(key)) {
+            updateExistingKey(key, value);
+        } else {
+            insertNewKey(key, value);
+        }
+    }
+
+    std::optional<V> handleGetOperation(const K& key) {
+        if (!isKeyPresent(key)) {
+            return std::nullopt;
+        }
+        return retrieveAndIncreaseFreq(key);
+    }
+
+    bool isKeyPresent(const K& key) const { return key2node_.count(key) != 0; }
+
+    void updateExistingKey(const K& key, const V& value) {
+        updateNodeValue(key, value);
+        increaseKeyFrequency(key);
+    }
+
+    void insertNewKey(const K& key, const V& value) {
+        ensureCapacityForInsertion();
+        addNewNodeWithFrequencyOne(key, value);
+    }
+
+    std::optional<V> retrieveAndIncreaseFreq(const K& key) {
+        increaseKeyFrequency(key);
+        return getNodeValue(key);
+    }
+
+    V getNodeValue(const K& key) { return key2node_[key]->value; }
+
+    void updateNodeValue(const K& key, const V& value) {
+        key2node_[key]->value = value;
+    }
+
+    void increaseKeyFrequency(const K& key) {
+        uint8_t old_freq = key2freq_[key]++;
+
+        moveNodeToNewFrequency(key, old_freq, old_freq + 1);
+        auditEmptyFrequencyList(old_freq);
+    }
+
+    void auditEmptyFrequencyList(uint8_t freq) {
+        cleanupEmptyFrequencyList(freq);
+        updateMinFrequencyIfNeeded(freq);
+    }
+
+    void ensureCapacityForInsertion() {
+        if (isAtFullCapacity()) {
+            removeLeastFrequentlyUsed();
+        }
+    }
+
+    bool isAtFullCapacity() const { return key2node_.size() >= capacity_; }
+
+    void addNewNodeWithFrequencyOne(const K& key, const V& value) {
+        key2freq_[key] = 1;
+        min_freq_ = 1;
+        freq2nodes_[1].emplace_back(key, value);
+        key2node_[key] = std::prev(freq2nodes_[1].end());
+    }
+
+    void ensureCapacityAfterDecrease() {
+        if (isOverCapacity()) {
+            removeLeastFrequentlyUsed();
+        }
+    }
+
+    bool isOverCapacity() const { return key2node_.size() > capacity_; }
+
+    void removeLeastFrequentlyUsed() {
+        removeLfuNode();
+        auditEmptyFrequencyList(min_freq_);
+    }
+
+    void removeLfuNode() {
+        auto& nodes = freq2nodes_[min_freq_];
+        const K& key_to_remove = nodes.front().key;
+        ghost_list_.put(key_to_remove);
+        key2node_.erase(key_to_remove);
+        key2freq_.erase(key_to_remove);
+        nodes.pop_front();
+    }
+
+    void moveNodeToNewFrequency(const K& key, uint8_t old_freq,
+                                uint8_t new_freq) {
+        auto& old_freq_list = freq2nodes_[old_freq];
+        auto& new_freq_list = freq2nodes_[new_freq];
+        auto node_iter = key2node_[key];
+        new_freq_list.splice(new_freq_list.end(), old_freq_list, node_iter);
+        key2node_[key] = std::prev(new_freq_list.end());
+    }
+
+    void cleanupEmptyFrequencyList(uint8_t freq) {
+        if (freq2nodes_[freq].empty()) {
+            freq2nodes_.erase(freq);
+        }
+    }
+
+    void updateMinFrequencyIfNeeded(uint8_t freq) {
+        if (freq == min_freq_ && freq2nodes_.count(freq) == 0) {
+            min_freq_ = freq2nodes_.begin()->first;
+        }
+    }
+
     size_t capacity_;
     uint8_t min_freq_{0};
 
@@ -294,73 +408,129 @@ class XSFArcCache : public XSFCache<K, V> {
           lfu_list_(capacity / 2, hash, key_equal) {}
 
     void put(const K& key, const V& value) override {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        bool in_lru = lru_list_.contains(key);
-        bool in_lfu = lfu_list_.contains(key);
-        if (!in_lru && !in_lfu) {
-            // 检查 ghost_list
-            adjustCapacityByGhostList(key);
-        }
-        // 加入或更新 lru_list
-        lru_list_.put(key, value);
-        if (in_lfu) {
-            // 更新 lfu_list
-            lfu_list_.put(key, value);
-        }
-        if (lru_list_.getCountByKey(key) >= k_) {
-            // 访问次数大于阈值，加入 lfu_list
-            lfu_list_.put(key, value);
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) override {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return std::nullopt;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        bool in_lru = lru_list_.contains(key);
-        bool in_lfu = lfu_list_.contains(key);
-        if (!in_lru && !in_lfu) {
-            // 检查 ghost_list
-            adjustCapacityByGhostList(key);
+        return handleGetOperation(key);
+    }
+
+   private:
+    enum class KeyLocation { IN_LRU, IN_LFU, NOT_IN_CACHE };
+
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        KeyLocation location = locateKey(key);
+        adjustCacheByGhostList(location, key);
+        updateCacheForKey(key, value, location);
+    }
+
+    std::optional<V> handleGetOperation(const K& key) {
+        KeyLocation location = locateKey(key);
+        adjustCacheByGhostList(location, key);
+        return retrieveValueForKey(key, location);
+    }
+
+    KeyLocation locateKey(const K& key) const {
+        if (lru_list_.contains(key)) {
+            return KeyLocation::IN_LRU;
         }
-        if (in_lru) {
-            // 从 lru_list 中获取 value
-            auto value = lru_list_.get(key).value();
-            // 访问次数大于阈值，加入 lfu_list
-            if (lru_list_.getCountByKey(key) >= k_) {
-                lfu_list_.put(key, value);
-            }
-            return value;
-        } else if (in_lfu) {
-            // 从 lfu_list 中获取 value
-            auto value = lfu_list_.get(key).value();
-            return value;
+        if (lfu_list_.contains(key)) {
+            return KeyLocation::IN_LFU;
+        }
+        return KeyLocation::NOT_IN_CACHE;
+    }
+
+    void adjustCacheByGhostList(KeyLocation location, const K& key) {
+        if (location != KeyLocation::NOT_IN_CACHE) {
+            return;  // 键已在缓存中，无需调整
+        }
+
+        if (isKeyInLruGhostList(key)) {
+            adjustForLruGhostHit(key);
+        } else if (isKeyInLfuGhostList(key)) {
+            adjustForLfuGhostHit(key);
+        }
+    }
+
+    void updateCacheForKey(const K& key, const V& value, KeyLocation location) {
+        updateLruListForKey(key, value);
+        updateLfuListForKey(key, value, location);
+        migrateToLfuListIfNeeded(key, value);
+    }
+
+    std::optional<V> retrieveValueForKey(const K& key, KeyLocation location) {
+        if (location == KeyLocation::IN_LRU) {
+            return retrieveFromLruList(key);
+        } else if (location == KeyLocation::IN_LFU) {
+            return retrieveFromLfuList(key);
         }
         return std::nullopt;
     }
 
-   private:
-    void adjustCapacityByGhostList(const K& key) {
-        if (lru_list_.containsInGhostList(key)) {
-            // key 存在于 lru_list 的 ghost_list 中
-            // 从 lru_list 的 ghost_list 中移除 key
-            lru_list_.removeInGhostList(key);
-            // 增加 lru_list 的容量
-            lru_list_.increaseCapacity();
-            // 减少 lfu_list 的容量
-            lfu_list_.decreaseCapacity();
-        } else if (lfu_list_.containsInGhostList(key)) {
-            // key 存在于 lfu_list 的 ghost_list 中
-            // 从 lfu_list 的 ghost_list 中移除 key
-            lfu_list_.removeInGhostList(key);
-            // 增加 lfu_list 的容量
-            lfu_list_.increaseCapacity();
-            // 减少 lru_list 的容量
-            lru_list_.decreaseCapacity();
+    bool isKeyInLruGhostList(const K& key) const {
+        return lru_list_.containsInGhostList(key);
+    }
+
+    bool isKeyInLfuGhostList(const K& key) const {
+        return lfu_list_.containsInGhostList(key);
+    }
+
+    void adjustForLruGhostHit(const K& key) {
+        lru_list_.removeInGhostList(key);
+        lru_list_.increaseCapacity();
+        lfu_list_.decreaseCapacity();
+    }
+
+    void adjustForLfuGhostHit(const K& key) {
+        lfu_list_.removeInGhostList(key);
+        lfu_list_.increaseCapacity();
+        lru_list_.decreaseCapacity();
+    }
+
+    void updateLruListForKey(const K& key, const V& value) {
+        lru_list_.put(key, value);
+    }
+
+    void updateLfuListForKey(const K& key, const V& value,
+                             KeyLocation location) {
+        if (location == KeyLocation::IN_LFU) {
+            lfu_list_.put(key, value);
+        }
+    }
+
+    void migrateToLfuListIfNeeded(const K& key, const V& value) {
+        if (shouldMigrateToLfu(key)) {
+            lfu_list_.put(key, value);
+        }
+    }
+
+    bool shouldMigrateToLfu(const K& key) const {
+        return lru_list_.getCountByKey(key) >= k_;
+    }
+
+    std::optional<V> retrieveFromLruList(const K& key) {
+        auto value = lru_list_.get(key).value();
+        handleLruRetrieval(key, value);
+        return value;
+    }
+
+    std::optional<V> retrieveFromLfuList(const K& key) {
+        return lfu_list_.get(key);
+    }
+
+    void handleLruRetrieval(const K& key, const V& value) {
+        if (shouldMigrateToLfu(key)) {
+            lfu_list_.put(key, value);
         }
     }
 
