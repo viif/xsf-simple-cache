@@ -9,7 +9,6 @@
 
 namespace xsf_simple_cache {
 
-// 非线程安全的基础 LRU 缓存实现
 template <typename K, typename V, typename Hash = std::hash<K>,
           typename KeyEqual = std::equal_to<K>>
 class XSFLruCacheUnsafe : public XSFCache<K, V> {
@@ -19,67 +18,108 @@ class XSFLruCacheUnsafe : public XSFCache<K, V> {
         : capacity_(capacity), key2node_(0, hash, key_equal) {}
 
     void put(const K& key, const V& value) override {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
-        if (contains(key)) {
-            // key 已存在，更新
-            key2node_[key]->value = value;
-            makeRecently(key);
-        } else {
-            // key 不存在，插入
-            if (key2node_.size() >= capacity_) {
-                popLeastRecently();
-            }
-            nodes_.emplace_back(key, value);
-            key2node_[key] = std::prev(nodes_.end());
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) override {
-        if (!contains(key)) {
+        if (IsZeroCapacity()) {
             return std::nullopt;
         }
-        makeRecently(key);
-        return key2node_[key]->value;
+        return handleGetOperation(key);
     }
 
-    bool contains(const K& key) { return key2node_.count(key) != 0; }
-
-    void remove(const K& key) {
-        if (key2node_.count(key) == 0) {
-            return;
-        }
-        auto node_iter = key2node_[key];
-        nodes_.erase(node_iter);
-        key2node_.erase(key);
-    }
-
-    void pop() {
-        if (nodes_.empty()) {
-            return;
-        }
-        popLeastRecently();
-    }
+    bool contains(const K& key) const { return isKeyPresent(key); }
 
     bool empty() const { return key2node_.empty(); }
 
     size_t size() const { return key2node_.size(); }
 
+    void pop() {
+        if (IsZeroCapacity() || empty()) {
+            return;
+        }
+        evictLeastRecentlyUsed();
+    }
+
+    void remove(const K& key) {
+        if (IsZeroCapacity() || !isKeyPresent(key)) {
+            return;
+        }
+        removeExistingNodeByKey(key);
+    }
+
    private:
-    void makeRecently(const K& key) {
-        // 移至链表后端
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        if (isKeyPresent(key)) {
+            updateExistingKey(key, value);
+        } else {
+            insertNewKey(key, value);
+        }
+    }
+
+    std::optional<V> handleGetOperation(const K& key) {
+        if (!isKeyPresent(key)) {
+            return std::nullopt;
+        }
+        return retrieveAndPromoteValue(key);
+    }
+
+    bool isKeyPresent(const K& key) const { return key2node_.count(key) != 0; }
+
+    void updateExistingKey(const K& key, const V& value) {
+        updateNodeValue(key, value);
+        promoteNodeToRecent(key);
+    }
+
+    void insertNewKey(const K& key, const V& value) {
+        ensureCapacityForInsertion();
+        addNewNode(key, value);
+    }
+
+    std::optional<V> retrieveAndPromoteValue(const K& key) {
+        promoteNodeToRecent(key);
+        return getValueByKey(key);
+    }
+
+    void ensureCapacityForInsertion() {
+        if (isAtFullCapacity()) {
+            evictLeastRecentlyUsed();
+        }
+    }
+
+    bool isAtFullCapacity() const { return key2node_.size() >= capacity_; }
+
+    V getValueByKey(const K& key) { return key2node_[key]->value; }
+
+    void promoteNodeToRecent(const K& key) {
         auto& node_iter = key2node_[key];
         nodes_.splice(nodes_.end(), nodes_, node_iter);
     }
 
-    void popLeastRecently() {
-        // 记录将逐出的 key
-        const K& key = nodes_.front().key;
-        // 移除映射
-        key2node_.erase(key);
-        // 移除链表头部节点
+    void evictLeastRecentlyUsed() {
+        const K& lru_key = nodes_.front().key;
+        key2node_.erase(lru_key);
         nodes_.pop_front();
+    }
+
+    void addNewNode(const K& key, const V& value) {
+        nodes_.emplace_back(key, value);
+        key2node_[key] = std::prev(nodes_.end());
+    }
+
+    void updateNodeValue(const K& key, const V& value) {
+        key2node_[key]->value = value;
+    }
+
+    void removeExistingNodeByKey(const K& key) {
+        auto& node_iter = key2node_[key];
+        nodes_.erase(node_iter);
+        key2node_.erase(key);
     }
 
     struct Node {
@@ -110,70 +150,98 @@ class XSFLruKCache : public XSFCache<K, V> {
           cache_lru_(capacity, hash, key_equal) {}
 
     void put(const K& key, const V& value) override {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        // 检查缓存队列
-        if (cache_lru_.contains(key)) {
-            // key 已存在，更新
-            cache_lru_.put(key, value);
-            return;
-        }
-
-        // 检查历史队列
-        auto record_opt = history_lru_.get(key);
-        if (record_opt.has_value()) {
-            // key 已存在，更新访问次数和数值
-            auto record = record_opt.value();
-            // 如果访问次数达到 k，迁移到缓存队列
-            if (record.count + 1 >= k_) {
-                history_lru_.remove(key);
-                cache_lru_.put(key, value);
-            } else {
-                record.count += 1;
-                record.value = value;
-                history_lru_.put(key, record);
-            }
-        } else {
-            // key 不存在，插入历史队列
-            if (size() >= capacity_) {
-                popLeastRecently();
-            }
-            AccessRecord new_record{1, value};
-            history_lru_.put(key, new_record);
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) override {
+        if (IsZeroCapacity()) {
+            return std::nullopt;
+        }
         std::lock_guard<std::mutex> lock(mutex_);
-        // 检查缓存队列
-        auto value_opt = cache_lru_.get(key);
-        if (value_opt.has_value()) {
-            return value_opt;
-        }
-
-        // 检查历史队列
-        auto record_opt = history_lru_.get(key);
-        if (record_opt.has_value()) {
-            auto record = record_opt.value();
-            // 如果访问次数达到 k，迁移到缓存队列
-            if (record.count + 1 >= k_) {
-                history_lru_.remove(key);
-                cache_lru_.put(key, record.value);
-                return record.value;
-            } else {
-                record.count += 1;
-                history_lru_.put(key, record);
-                return record.value;
-            }
-        }
-
-        return std::nullopt;
+        return processGetOperation(key);
     }
 
    private:
-    void popLeastRecently() {
+    struct AccessRecord {
+        uint8_t count;
+        V value;
+    };
+
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        if (isKeyInCache(key)) {
+            updateKeyInCache(key, value);
+        } else {
+            handleKeyNotInCache(key, value);
+        }
+    }
+
+    std::optional<V> processGetOperation(const K& key) {
+        if (auto cache_value = tryGetFromCache(key)) {
+            return cache_value;
+        }
+        return tryGetFromHistory(key);
+    }
+
+    bool isKeyInCache(const K& key) { return cache_lru_.contains(key); }
+
+    void updateKeyInCache(const K& key, const V& value) {
+        cache_lru_.put(key, value);
+    }
+
+    void handleKeyNotInCache(const K& key, const V& value) {
+        if (auto record = history_lru_.get(key)) {
+            processExistingHistoryRecordForPut(key, value, record.value());
+        } else {
+            insertNewKeyIntoHistory(key, value);
+        }
+    }
+
+    void processExistingHistoryRecordForPut(const K& key, const V& value,
+                                            AccessRecord& record) {
+        if (shouldPromoteToCache(record)) {
+            promoteFromHistoryToCache(key, value);
+        } else {
+            updateHistoryRecord(key, value, record);
+        }
+    }
+
+    void insertNewKeyIntoHistory(const K& key, const V& value) {
+        ensureCapacityForInsertion();
+        AccessRecord record{1, value};
+        history_lru_.put(key, record);
+    }
+
+    bool shouldPromoteToCache(const AccessRecord& record) {
+        return record.count + 1 >= k_;
+    }
+
+    void promoteFromHistoryToCache(const K& key, const V& value) {
+        history_lru_.remove(key);
+        cache_lru_.put(key, value);
+    }
+
+    void updateHistoryRecord(const K& key, const V& value,
+                             AccessRecord& record) {
+        record.count += 1;
+        record.value = value;
+        history_lru_.put(key, record);
+    }
+
+    void ensureCapacityForInsertion() {
+        if (isAtFullCapacity()) {
+            evictLeastRecentlyUsed();
+        }
+    }
+
+    bool isAtFullCapacity() const { return size() >= capacity_; }
+
+    void evictLeastRecentlyUsed() {
         if (!history_lru_.empty()) {
             history_lru_.pop();
         } else {
@@ -183,19 +251,47 @@ class XSFLruKCache : public XSFCache<K, V> {
 
     size_t size() const { return history_lru_.size() + cache_lru_.size(); }
 
-    const uint8_t k_;  // 访问次数阈值
-    const size_t capacity_;
-    std::mutex mutex_;
+    std::optional<V> tryGetFromCache(const K& key) {
+        return cache_lru_.get(key);
+    }
 
-    struct AccessRecord {
-        uint8_t count;
-        V value;
-    };
+    std::optional<V> tryGetFromHistory(const K& key) {
+        auto record_opt = history_lru_.get(key);
+        if (!record_opt) {
+            return std::nullopt;
+        }
+        return processHistoryHit(key, record_opt.value());
+    }
+
+    std::optional<V> processHistoryHit(const K& key, AccessRecord& record) {
+        if (shouldPromoteToCache(record)) {
+            return promoteAndGetFromCache(key, record);
+        } else {
+            return incrementAndGetFromHistory(key, record);
+        }
+    }
+
+    std::optional<V> promoteAndGetFromCache(const K& key,
+                                            AccessRecord& record) {
+        promoteFromHistoryToCache(key, record.value);
+        return record.value;
+    }
+
+    std::optional<V> incrementAndGetFromHistory(const K& key,
+                                                AccessRecord& record) {
+        record.count += 1;
+        history_lru_.put(key, record);
+        return record.value;
+    }
 
     XSFLruCacheUnsafe<K, AccessRecord, Hash, KeyEqual>
         history_lru_;  // 访问次数小于 k 的记录
     XSFLruCacheUnsafe<K, V, Hash, KeyEqual>
         cache_lru_;  // 访问次数达到 k 的记录
+
+    const uint8_t k_;  // 访问次数阈值
+    const size_t capacity_;
+    std::mutex mutex_;
 };
 
 template <typename K, typename V, typename Hash = std::hash<K>,
