@@ -21,83 +21,22 @@ class XSFLfuCache : public XSFCache<K, V> {
           key2node_(0, hash, key_equal) {}
 
     void put(const K& key, const V& value) override {
-        if (capacity_ == 0) {
+        if (IsZeroCapacity()) {
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (key2node_.count(key) != 0) {
-            // key 已存在，更新
-            key2node_[key]->value = value;
-            increaseFreq(key);
-        } else {
-            // key 不存在，加入
-            if (key2node_.size() >= capacity_) {
-                removeMinFreqKey();
-            }
-            // 新加入，即对应频率、最小频率为 1
-            key2freq_[key] = 1;
-            min_freq_ = 1;
-            // 加入到对应频率的节点链表中
-            freq2nodes_[1].emplace_back(key, value);
-            // 记录 key 到节点的映射
-            key2node_[key] = std::prev(freq2nodes_[1].end());
-        }
+        handlePutOperation(key, value);
     }
 
     std::optional<V> get(const K& key) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (key2node_.count(key) == 0) {
+        if (IsZeroCapacity()) {
             return std::nullopt;
         }
-        increaseFreq(key);
-        return key2node_[key]->value;
+        std::lock_guard<std::mutex> lock(mutex_);
+        return handleGetOperation(key);
     }
 
    private:
-    void increaseFreq(const K& key) {
-        // 找到 key 对应的频率
-        uint8_t freq = key2freq_[key];
-        // 更新 key 到频率的映射
-        key2freq_[key]++;
-
-        // 在新频率对应的节点链表中插入新节点
-        auto& new_nodes = freq2nodes_[freq + 1];
-        new_nodes.emplace_back(key, key2node_[key]->value);
-        // 删除原频率对应的节点链表中的节点
-        auto& old_nodes = freq2nodes_[freq];
-        old_nodes.erase(key2node_[key]);
-        if (old_nodes.empty()) {
-            // 若原节点链表为空
-            // 删除对应频率到链表的映射
-            freq2nodes_.erase(freq);
-            if (freq == min_freq_) {
-                // 更新最小频率
-                min_freq_ = freq2nodes_.begin()->first;
-            }
-        }
-        // 更新 key 到节点的映射
-        key2node_[key] = std::prev(new_nodes.end());
-    }
-
-    void removeMinFreqKey() {
-        // 找到最小频率对应的节点链表
-        auto& nodes = freq2nodes_[min_freq_];
-        // 找到要逐出的（访问频率最少且最旧）的节点对应的 key
-        const K& key = nodes.front().key;
-        // 移除对应 key 到节点的映射
-        key2node_.erase(key);
-        // 移除对应 key 到频率的映射
-        key2freq_.erase(key);
-        // 从链表中逐出节点
-        nodes.pop_front();
-        if (nodes.empty()) {
-            // 若链表为空，删除对应频率到链表的映射
-            freq2nodes_.erase(min_freq_);
-        }
-        // 更新最小频率
-        min_freq_ = freq2nodes_.begin()->first;
-    }
-
     struct Node {
         K key;
         V value;
@@ -105,6 +44,108 @@ class XSFLfuCache : public XSFCache<K, V> {
         Node() = default;
         Node(const K& k, const V& v) : key(k), value(v) {}
     };
+
+    bool IsZeroCapacity() const { return capacity_ == 0; }
+
+    void handlePutOperation(const K& key, const V& value) {
+        if (isKeyPresent(key)) {
+            updateExistingKey(key, value);
+        } else {
+            insertNewKey(key, value);
+        }
+    }
+
+    std::optional<V> handleGetOperation(const K& key) {
+        if (!isKeyPresent(key)) {
+            return std::nullopt;
+        }
+        return retrieveAndIncreaseFreq(key);
+    }
+
+    bool isKeyPresent(const K& key) const { return key2node_.count(key) != 0; }
+
+    void updateExistingKey(const K& key, const V& value) {
+        updateNodeValue(key, value);
+        increaseKeyFrequency(key);
+    }
+
+    void insertNewKey(const K& key, const V& value) {
+        ensureCapacityForInsertion();
+        addNewNodeWithFrequencyOne(key, value);
+    }
+
+    std::optional<V> retrieveAndIncreaseFreq(const K& key) {
+        increaseKeyFrequency(key);
+        return getNodeValue(key);
+    }
+
+    V getNodeValue(const K& key) { return key2node_[key]->value; }
+
+    void updateNodeValue(const K& key, const V& value) {
+        key2node_[key]->value = value;
+    }
+
+    void increaseKeyFrequency(const K& key) {
+        uint8_t old_freq = key2freq_[key]++;
+
+        moveNodeToNewFrequency(key, old_freq, old_freq + 1);
+        auditEmptyFrequencyList(old_freq);
+    }
+
+    void auditEmptyFrequencyList(uint8_t freq) {
+        cleanupEmptyFrequencyList(freq);
+        updateMinFrequencyIfNeeded(freq);
+    }
+
+    void ensureCapacityForInsertion() {
+        if (isAtFullCapacity()) {
+            removeLeastFrequentlyUsed();
+        }
+    }
+
+    void addNewNodeWithFrequencyOne(const K& key, const V& value) {
+        key2freq_[key] = 1;
+        min_freq_ = 1;
+        freq2nodes_[1].emplace_back(key, value);
+        key2node_[key] = std::prev(freq2nodes_[1].end());
+    }
+
+    bool isAtFullCapacity() const { return key2node_.size() >= capacity_; }
+
+    void removeLeastFrequentlyUsed() {
+        removeLruNode();
+        auditEmptyFrequencyList(min_freq_);
+    }
+
+    void removeLruNode() {
+        auto& nodes = freq2nodes_[min_freq_];
+        const K& key_to_remove = nodes.front().key;
+        key2node_.erase(key_to_remove);
+        key2freq_.erase(key_to_remove);
+        nodes.pop_front();
+    }
+
+    void moveNodeToNewFrequency(const K& key, uint8_t old_freq,
+                                uint8_t new_freq) {
+        auto& old_freq_list = freq2nodes_[old_freq];
+        auto& new_freq_list = freq2nodes_[new_freq];
+        auto node_iter = key2node_[key];
+        new_freq_list.splice(new_freq_list.end(), old_freq_list, node_iter);
+        key2node_[key] = std::prev(new_freq_list.end());
+    }
+
+    void cleanupEmptyFrequencyList(uint8_t freq) {
+        if (freq2nodes_[freq].empty()) {
+            freq2nodes_.erase(freq);
+        }
+    }
+
+    void updateMinFrequencyIfNeeded(uint8_t freq) {
+        if (freq == min_freq_ && freq2nodes_.count(freq) == 0) {
+            min_freq_ = freq2nodes_.begin()->first;
+        }
+    }
+
     const size_t capacity_;
     uint8_t min_freq_{1};
     std::mutex mutex_;
